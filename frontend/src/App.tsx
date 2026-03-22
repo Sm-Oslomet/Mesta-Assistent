@@ -9,11 +9,24 @@ type ChatRequest = {
     messages: ApiMessage[];
     topK: number;
 };
-type ChatApiResponse = {
-    answer?: string;
+
+type SourceHit = {
+    title?: string | null;
+    url?: string | null;
+    contentSnippet: string;
 };
 
-type Message = { id: string; role: Role; content: string };
+type ChatApiResponse = {
+    answer?: string;
+    sources?: SourceHit[];
+};
+
+type Message = {
+    id: string;
+    role: Role;
+    content: string;
+    sources?: SourceHit[];
+};
 
 function uid() {
     return Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -33,7 +46,7 @@ function useIsDesktop() {
     return isDesktop;
 }
 
-async function askBackend(req: ChatRequest): Promise<string> {
+async function askBackend(req: ChatRequest): Promise<ChatApiResponse> {
     const base = import.meta.env.VITE_API_BASE_URL as string;
 
     if (!base) {
@@ -56,8 +69,7 @@ async function askBackend(req: ChatRequest): Promise<string> {
         throw new Error(`Backend ${res.status}: ${text || res.statusText}`);
     }
 
-    const data = (await res.json()) as ChatApiResponse;
-    return data.answer?.trim() || "Ingen svartekst ble returnert fra backend.";
+    return (await res.json()) as ChatApiResponse;
 }
 
 export default function App() {
@@ -112,7 +124,6 @@ export default function App() {
         ]);
 
         try {
-            // Siste 3 runder (6 meldinger) sendes som kontekst
             const history: ApiMessage[] = messages
                 .filter((m) => m.role === "user" || m.role === "assistant")
                 .slice(-6)
@@ -121,15 +132,22 @@ export default function App() {
             const req: ChatRequest = {
                 question: q,
                 messages: history,
-                topK: 6,
+                topK: 5,
             };
 
-            const answerText = await askBackend(req);
+            const response = await askBackend(req);
+            const answerText =
+                response.answer?.trim() || "Ingen svartekst ble returnert fra backend.";
 
             setMessages((prev) =>
                 prev.map((m) =>
                     m.id === typingId
-                        ? { id: typingId, role: "assistant", content: answerText }
+                        ? {
+                            id: typingId,
+                            role: "assistant",
+                            content: answerText,
+                            sources: response.sources ?? [],
+                        }
                         : m
                 )
             );
@@ -139,7 +157,7 @@ export default function App() {
             setMessages((prev) =>
                 prev.map((m) =>
                     m.id === typingId
-                        ? { id: typingId, role: "assistant", content: msg }
+                        ? { id: typingId, role: "assistant", content: msg, sources: [] }
                         : m
                 )
             );
@@ -161,7 +179,6 @@ export default function App() {
     return (
         <div style={styles.page}>
             <div style={shellStyle}>
-                {/* Header */}
                 <div style={styles.header}>
                     <div style={styles.headerLeft}>
                         <div style={styles.appIcon} aria-hidden>
@@ -180,20 +197,23 @@ export default function App() {
                     </button>
                 </div>
 
-                {/* Content */}
                 <div style={styles.content} ref={listRef}>
                     {isEmpty ? (
                         <EmptyState onPick={applySuggestion} isDesktop={isDesktop} />
                     ) : (
                         <div style={styles.chat}>
                             {messages.map((m) => (
-                                <Bubble key={m.id} role={m.role} content={m.content} />
+                                <Bubble
+                                    key={m.id}
+                                    role={m.role}
+                                    content={m.content}
+                                    sources={m.sources}
+                                />
                             ))}
                         </div>
                     )}
                 </div>
 
-                {/* Composer */}
                 <div style={styles.composerBar}>
                     <div style={styles.inputWrap}>
                         <textarea
@@ -291,8 +311,20 @@ function SuggestionCard({
     );
 }
 
-function Bubble({ role, content }: { role: Role; content: string }) {
+function Bubble({
+    role,
+    content,
+    sources,
+}: {
+    role: Role;
+    content: string;
+    sources?: SourceHit[];
+}) {
     const isUser = role === "user";
+    const visibleSources = (sources ?? []).filter(
+        (source) => source.title || source.url
+    );
+
     return (
         <div
             style={{
@@ -311,6 +343,34 @@ function Bubble({ role, content }: { role: Role; content: string }) {
                         {line || "\u00A0"}
                     </div>
                 ))}
+
+                {!isUser && visibleSources.length > 0 && (
+                    <div style={styles.sourcesWrap}>
+                        <div style={styles.sourcesTitle}>Kilder</div>
+                        <div style={styles.sourcesList}>
+                            {visibleSources.map((source, index) => (
+                                <div key={`${source.url ?? source.title ?? "source"}-${index}`} style={styles.sourceItem}>
+                                    <div style={styles.sourceName}>
+                                        {source.title || `Kilde ${index + 1}`}
+                                    </div>
+
+                                    {source.url ? (
+                                        <a
+                                            href={source.url}
+                                            target="_blank"
+                                            rel="noreferrer noopener"
+                                            style={styles.sourceLink}
+                                        >
+                                            Åpne i SharePoint
+                                        </a>
+                                    ) : (
+                                        <div style={styles.sourceSnippet}>{source.contentSnippet}</div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -325,7 +385,6 @@ const styles: Record<string, React.CSSProperties> = {
         alignItems: "stretch",
     },
 
-    // Desktop: fyll skjermen
     shellDesktop: {
         width: "100%",
         height: "100vh",
@@ -334,7 +393,6 @@ const styles: Record<string, React.CSSProperties> = {
         flexDirection: "column",
     },
 
-    // Mobil: “kort/phone”-følelse
     shellMobile: {
         width: "100%",
         maxWidth: 420,
@@ -464,6 +522,45 @@ const styles: Record<string, React.CSSProperties> = {
     },
     userBubble: { background: "#E8EDFF", color: "#111827" },
     assistantBubble: { background: "#FFFFFF", color: "#111827" },
+
+    sourcesWrap: {
+        marginTop: 12,
+        paddingTop: 10,
+        borderTop: "1px solid rgba(0,0,0,0.08)",
+    },
+    sourcesTitle: {
+        fontSize: 12,
+        fontWeight: 800,
+        color: "#374151",
+        marginBottom: 8,
+    },
+    sourcesList: {
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+    },
+    sourceItem: {
+        padding: "8px 10px",
+        borderRadius: 12,
+        background: "#F9FAFB",
+        border: "1px solid rgba(0,0,0,0.06)",
+    },
+    sourceName: {
+        fontWeight: 700,
+        fontSize: 12.5,
+        color: "#111827",
+        marginBottom: 4,
+    },
+    sourceLink: {
+        fontSize: 12.5,
+        color: "#4F46E5",
+        textDecoration: "none",
+        fontWeight: 700,
+    },
+    sourceSnippet: {
+        fontSize: 12,
+        color: "#6B7280",
+    },
 
     composerBar: {
         padding: "10px 12px",
