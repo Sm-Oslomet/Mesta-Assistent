@@ -9,6 +9,7 @@ public interface IAzureSearchClient
         int topK,
         string contentField,
         string titleField,
-        string urlField,
+        IReadOnlyList<string> urlFields,
+        string documentIdField,
         CancellationToken ct);
 }

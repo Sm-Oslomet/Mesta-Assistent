@@ -24,7 +24,8 @@ public sealed class AzureSearchRestClient : IAzureSearchClient
         int topK,
         string contentField,
         string titleField,
-        string urlField,
+        IReadOnlyList<string> urlFields,
+        string documentIdField,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(queryText))
@@ -38,7 +39,6 @@ public sealed class AzureSearchRestClient : IAzureSearchClient
         if (string.IsNullOrWhiteSpace(apiVersion))
             apiVersion = "2023-11-01";
 
-        // Index has default semantic config; you can also override via config.
         var semanticConfig =
             _config["AzureSearch:SemanticConfiguration"]
             ?? "multimodal-rag-index-ai-assistent-semantic-configuration";
@@ -53,12 +53,17 @@ public sealed class AzureSearchRestClient : IAzureSearchClient
         ub.Query = $"api-version={Uri.EscapeDataString(apiVersion)}";
         var url = ub.Uri.ToString();
 
-        var selectFields = new[] { contentField, titleField, urlField }
+        var effectiveUrlFields = (urlFields ?? Array.Empty<string>())
             .Where(f => !string.IsNullOrWhiteSpace(f))
-            .Distinct(StringComparer.Ordinal)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        // 1) Try SEMANTIC first (best quality)
+        var selectFields = new[] { contentField, titleField, documentIdField }
+            .Concat(effectiveUrlFields)
+            .Where(f => !string.IsNullOrWhiteSpace(f))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
         var semanticPayload = new
         {
             search = queryText,
@@ -70,11 +75,11 @@ public sealed class AzureSearchRestClient : IAzureSearchClient
             select = string.Join(',', selectFields)
         };
 
-        var semanticResults = await SendAndParseAsync(url, apiKey, semanticPayload, contentField, titleField, urlField, ct);
+        var semanticResults = await SendAndParseAsync(
+            url, apiKey, semanticPayload, contentField, titleField, effectiveUrlFields, documentIdField, ct);
         if (semanticResults.Count > 0)
             return semanticResults;
 
-        // 2) Fallback to SIMPLE search (more forgiving)
         var simplePayload = new
         {
             search = queryText,
@@ -82,7 +87,20 @@ public sealed class AzureSearchRestClient : IAzureSearchClient
             select = string.Join(',', selectFields)
         };
 
-        return await SendAndParseAsync(url, apiKey, simplePayload, contentField, titleField, urlField, ct);
+        var simpleResults = await SendAndParseAsync(
+            url, apiKey, simplePayload, contentField, titleField, effectiveUrlFields, documentIdField, ct);
+        if (simpleResults.Count > 0)
+            return simpleResults;
+
+        var wildcardPayload = new
+        {
+            search = "*",
+            top = topK,
+            select = string.Join(',', selectFields)
+        };
+
+        return await SendAndParseAsync(
+            url, apiKey, wildcardPayload, contentField, titleField, effectiveUrlFields, documentIdField, ct);
     }
 
     private async Task<List<RetrievedChunk>> SendAndParseAsync(
@@ -91,20 +109,25 @@ public sealed class AzureSearchRestClient : IAzureSearchClient
         object payload,
         string contentField,
         string titleField,
-        string urlField,
+        IReadOnlyList<string> urlFields,
+        string documentIdField,
         CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Post, url);
         req.Headers.TryAddWithoutValidation("api-key", apiKey);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        req.Content = new StringContent(JsonSerializer.Serialize(payload, _json.Options), Encoding.UTF8, "application/json");
+        req.Content = new StringContent(
+            JsonSerializer.Serialize(payload, _json.Options),
+            Encoding.UTF8,
+            "application/json");
 
         var client = _http.CreateClient();
         using var resp = await client.SendAsync(req, ct);
         var body = await resp.Content.ReadAsStringAsync(ct);
 
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Azure AI Search query failed. URL: {url}. Status: {(int)resp.StatusCode} {resp.ReasonPhrase}. Body: {body}");
+            throw new InvalidOperationException(
+                $"Azure AI Search query failed. URL: {url}. Status: {(int)resp.StatusCode} {resp.ReasonPhrase}. Body: {body}");
 
         using var doc = JsonDocument.Parse(body);
         if (!doc.RootElement.TryGetProperty("value", out var valueEl) || valueEl.ValueKind != JsonValueKind.Array)
@@ -115,12 +138,24 @@ public sealed class AzureSearchRestClient : IAzureSearchClient
         foreach (var item in valueEl.EnumerateArray())
         {
             var content = TryGetString(item, contentField) ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(content)) continue;
+            if (string.IsNullOrWhiteSpace(content))
+                continue;
 
             var title = TryGetString(item, titleField);
-            var urlVal = TryGetString(item, urlField);
+            var documentId = TryGetString(item, documentIdField);
 
-            results.Add(new RetrievedChunk(content, title, urlVal));
+            string? urlVal = null;
+            foreach (var f in urlFields)
+            {
+                var val = TryGetString(item, f);
+                if (!string.IsNullOrWhiteSpace(val))
+                {
+                    urlVal = val;
+                    break;
+                }
+            }
+
+            results.Add(new RetrievedChunk(content, title, urlVal, documentId));
         }
 
         return results;

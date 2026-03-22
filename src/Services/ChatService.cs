@@ -5,7 +5,6 @@ namespace AiAssistant.Api.Services;
 
 public sealed class ChatService
 {
-    private const int MaxHistoryMessages = 8;
     private readonly RetrievalService _retrieval;
     private readonly PromptBuilder _prompt;
     private readonly IChatCompletionClient _chat;
@@ -20,24 +19,36 @@ public sealed class ChatService
     public async Task<ChatResponse> AskAsync(ChatRequest req, CancellationToken ct)
     {
         var topK = req.TopK ?? 6;
-        if (topK is < 1 or > 10) topK = 6;
+        if (topK is < 1 or > 20) topK = 6;
 
         var chunks = await _retrieval.RetrieveAsync(req.Question, topK, ct);
 
+        var distinctChunks = chunks
+            .GroupBy(c =>
+            {
+                if (!string.IsNullOrWhiteSpace(c.DocumentId))
+                    return $"doc:{c.DocumentId.Trim().ToLowerInvariant()}";
+
+                if (!string.IsNullOrWhiteSpace(c.Url))
+                    return $"url:{c.Url.Trim().ToLowerInvariant()}";
+
+                return $"title:{(c.Title ?? string.Empty).Trim().ToLowerInvariant()}";
+            })
+            .Select(g => g.First())
+            .ToList();
+
         var system = _prompt.BuildSystemPrompt();
-        var sources = _prompt.BuildSourcesBlock(chunks);
-        var answerStyleInstruction = _prompt.BuildAnswerStyleInstruction(req.Question);
+        var sources = _prompt.BuildSourcesBlock(distinctChunks);
 
         var messages = new List<LlmChatMessage>
         {
             new("system", system),
-            new("system", answerStyleInstruction),
             new("system", "SOURCES:\n" + sources)
         };
 
         if (req.Messages is { Count: > 0 })
         {
-            foreach (var m in req.Messages.TakeLast(MaxHistoryMessages))
+            foreach (var m in req.Messages)
             {
                 var role = (m.Role ?? "").Trim().ToLowerInvariant();
                 if (role is not ("system" or "user" or "assistant")) continue;
@@ -49,19 +60,56 @@ public sealed class ChatService
         var normalizedQuestion = req.Question.Trim();
         var lastUserMessage = messages.LastOrDefault(m => m.Role == "user");
         if (lastUserMessage is null || !string.Equals(lastUserMessage.Content.Trim(), normalizedQuestion, StringComparison.Ordinal))
-
             messages.Add(new("user", req.Question));
 
         var answer = await _chat.CompleteAsync(messages, ct);
 
         if (string.IsNullOrWhiteSpace(answer))
-            answer = BuildGroundedFallbackAnswer(req.Question, chunks);
+        {
+            var fallbackMessages = new List<LlmChatMessage>
+            {
+                new("system", system),
+                new("system", "SOURCES:\n" + sources),
+                new("user", req.Question)
+            };
 
-        var src = chunks.Select(c => new SourceHit(
-            Title: c.Title,
-            Url: c.Url,
-            ContentSnippet: c.Content.Length <= 240 ? c.Content : c.Content[..240] + "…"
-        )).ToList();
+            answer = await _chat.CompleteAsync(fallbackMessages, ct);
+        }
+
+        if (string.IsNullOrWhiteSpace(answer))
+            answer = BuildGroundedFallbackAnswer(req.Question, distinctChunks);
+
+        var src = distinctChunks
+            .GroupBy(c =>
+            {
+                if (!string.IsNullOrWhiteSpace(c.DocumentId))
+                    return $"doc:{c.DocumentId.Trim().ToLowerInvariant()}";
+
+                if (!string.IsNullOrWhiteSpace(c.Url))
+                    return $"url:{c.Url.Trim().ToLowerInvariant()}";
+
+                return $"title:{(c.Title ?? string.Empty).Trim().ToLowerInvariant()}";
+            })
+            .Select(g =>
+            {
+                var c = g.First();
+                var displayTitle = c.Title;
+
+                if (!string.IsNullOrWhiteSpace(c.Url) && !string.IsNullOrWhiteSpace(c.Title))
+                {
+                    if (c.Url.Contains("Brukerveiledning%2FRapporter%2F", StringComparison.OrdinalIgnoreCase))
+                        displayTitle = $"{c.Title} — Rapporter";
+                    else if (c.Url.Contains("Brukerveiledning%2FVinter%20og%20%C3%98kt-behandling%2F", StringComparison.OrdinalIgnoreCase))
+                        displayTitle = $"{c.Title} — Vinter og Økt-behandling";
+                }
+
+                return new SourceHit(
+                    Title: displayTitle,
+                    Url: c.Url,
+                    ContentSnippet: c.Content.Length <= 240 ? c.Content : c.Content[..240] + "…"
+                );
+            })
+            .ToList();
 
         return new ChatResponse(answer, src);
     }

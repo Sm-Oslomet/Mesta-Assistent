@@ -17,6 +17,7 @@ public sealed class PromptBuilder
         "Only say that you do not know if the sources do not contain enough information to answer at all. " +
         "Ignore irrelevant or repeated source text. " +
         "Cite supporting sources inline using [S1], [S2], etc. " +
+        "Do not add a separate source-link section yourself; file links are appended by the system. " +
         "Keep the answer clear, grounded, and concise.";
 
     public string BuildAnswerStyleInstruction(string question)
@@ -75,5 +76,6 @@ public sealed class PromptBuilder
 public sealed record RetrievedChunk(
     string Content,
     string? Title,
-    string? Url
+    string? Url,
+    string? DocumentId
 );
