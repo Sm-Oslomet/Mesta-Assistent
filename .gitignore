@@ -23,3 +23,6 @@ frontend/build/
 # OS files
 .DS_Store
 Thumbs.db
+
+# for secrutity, to not include api keys
+appsettings.Development.json
