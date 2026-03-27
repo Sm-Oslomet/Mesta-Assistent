@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import {useMsal} from "@azure/msal-react"; // SmDev
+import {callApi} from "./api/apiClient"; // smDev
+import { speechToText, textToSpeech } from "./services/speechService"; // smDev
 
 type Role = "user" | "assistant";
 
@@ -55,12 +58,8 @@ async function askBackend(req: ChatRequest): Promise<ChatApiResponse> {
         );
     }
 
-    const res = await fetch(`${base}/api/Chat`, {
+    const res = await callApi(`${base}/api/Chat`, { // SmDev
         method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-        },
         body: JSON.stringify(req),
     });
 
@@ -73,6 +72,8 @@ async function askBackend(req: ChatRequest): Promise<ChatApiResponse> {
 }
 
 export default function App() {
+    const {accounts } = useMsal(); // SmDev
+    const user = accounts[0]; // SmDev
     const isDesktop = useIsDesktop();
 
     const [messages, setMessages] = useState<Message[]>([]);
@@ -192,9 +193,9 @@ export default function App() {
                         </div>
                     </div>
 
-                    <button style={styles.iconBtn} title="Profil">
-                        <span style={{ fontSize: 16 }}>👤</span>
-                    </button>
+                    <div style={{ fontSize: 13, fontWeight: 600}}>
+                        {user ? `Velkommen ${user.name}`: ""}
+                    </div>
                 </div>
 
                 <div style={styles.content} ref={listRef}>
@@ -227,7 +228,20 @@ export default function App() {
                             disabled={isSending}
                         />
                     </div>
-
+                    <button // added by SmDev Sm-Oslomet
+                        onClick={async() => {
+                            try {
+                                const text = await speechToText();
+                                setInput(text);
+                            } catch (err) {
+                                console.error("Speech error:", err);
+                            }
+                        }}
+                        style={styles.roundbtn}
+                        title="Speak"
+                    >
+                        🎤
+                    </button>
                     <button
                         onClick={() => void send()}
                         disabled={!canSend}
@@ -343,6 +357,31 @@ function Bubble({
                         {line || "\u00A0"}
                     </div>
                 ))}
+
+                {!isUser && (
+                    <div style={{ marginTop: 8}}>
+                        <button
+                            onClick={async () => {
+                                try {
+                                    const audioUrl = await textToSpeech(content);
+                                    const audio = new Audio(audioUrl);
+                                    audio.play();
+                                } catch (err) {
+                                    console.error(" from SmDev, TTS error:", err);
+                                }
+                            }}
+                            style={{
+                                border: "none",
+                                background: "transparent",
+                                cursor: "pointer",
+                                fontSize: 14,
+                            }}
+                            title="Play audio"
+                        >
+                            🔊
+                        </button>
+                    </div>
+                )}
 
                 {!isUser && visibleSources.length > 0 && (
                     <div style={styles.sourcesWrap}>
