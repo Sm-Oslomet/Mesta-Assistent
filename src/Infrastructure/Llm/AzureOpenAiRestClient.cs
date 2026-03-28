@@ -1,5 +1,5 @@
 using AiAssistant.Api.Utils;
-using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 
@@ -72,14 +72,6 @@ public sealed class AzureOpenAiRestClient : IEmbeddingClient, IChatCompletionCli
 
         var url = $"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={apiVersion}";
 
-        /*
-        Context window (input + output)  ~128,000 tokens
-        input tokens + completion tokens ? context window
-            Input prompt: 4,500 tokens 
-            Max completion: 16,000 tokens
-            Total: 20,500 tokens ? within 128k
-         */
-
         var payload = new
         {
             messages = messages.Select(m => new { role = m.Role, content = m.Content }),
@@ -100,6 +92,97 @@ public sealed class AzureOpenAiRestClient : IEmbeddingClient, IChatCompletionCli
 
         using var doc = JsonDocument.Parse(body);
         return ExtractChatContent(doc.RootElement);
+    }
+
+    public async IAsyncEnumerable<string> CompleteStreamingAsync(
+        IReadOnlyList<LlmChatMessage> messages,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        var endpoint = Require("AzureOpenAI:Endpoint").TrimEnd('/');
+        var key = Require("AzureOpenAI:ApiKey");
+        var deployment = Require("AzureOpenAI:ChatDeployment");
+        var apiVersion = _config["AzureOpenAI:ApiVersion"] ?? "2024-02-15-preview";
+
+        var url = $"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={apiVersion}";
+
+        var payload = new
+        {
+            messages = messages.Select(m => new { role = m.Role, content = m.Content }),
+            temperature = 1,
+            max_completion_tokens = 16000,
+            stream = true
+        };
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, url);
+        req.Headers.Add("api-key", key);
+        req.Content = new StringContent(
+            JsonSerializer.Serialize(payload, _json.Options),
+            Encoding.UTF8,
+            "application/json");
+
+        var client = _http.CreateClient();
+
+        using var resp = await client.SendAsync(
+            req,
+            HttpCompletionOption.ResponseHeadersRead,
+            ct);
+
+        var stream = await resp.Content.ReadAsStreamAsync(ct);
+
+        if (!resp.IsSuccessStatusCode)
+        {
+            using var errorReader = new StreamReader(stream);
+            var errorBody = await errorReader.ReadToEndAsync(ct);
+            throw new InvalidOperationException($"Azure OpenAI streaming chat failed: {(int)resp.StatusCode} {resp.ReasonPhrase}. Body: {errorBody}");
+        }
+
+        using var reader = new StreamReader(stream);
+
+        while (!reader.EndOfStream)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var line = await reader.ReadLineAsync();
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            if (!line.StartsWith("data:", StringComparison.Ordinal))
+                continue;
+
+            var data = line["data:".Length..].Trim();
+
+            if (data == "[DONE]")
+                yield break;
+
+            JsonDocument? doc = null;
+            try
+            {
+                doc = JsonDocument.Parse(data);
+
+                if (!doc.RootElement.TryGetProperty("choices", out var choices) ||
+                    choices.ValueKind != JsonValueKind.Array ||
+                    choices.GetArrayLength() == 0)
+                {
+                    continue;
+                }
+
+                var firstChoice = choices[0];
+
+                if (!firstChoice.TryGetProperty("delta", out var delta))
+                    continue;
+
+                if (!delta.TryGetProperty("content", out var contentElement))
+                    continue;
+
+                var text = ExtractText(contentElement);
+                if (!string.IsNullOrWhiteSpace(text))
+                    yield return text;
+            }
+            finally
+            {
+                doc?.Dispose();
+            }
+        }
     }
 
     private static string ExtractChatContent(JsonElement root)
@@ -153,10 +236,6 @@ public sealed class AzureOpenAiRestClient : IEmbeddingClient, IChatCompletionCli
         if (element.ValueKind != JsonValueKind.Object)
             return string.Empty;
 
-        // Typical text part shapes include:
-        // { "type": "text", "text": "..." }
-        // { "type": "output_text", "text": "..." }
-        // { "text": { "value": "..." } }
         if (element.TryGetProperty("text", out var textValue))
         {
             var text = ExtractText(textValue);
@@ -177,6 +256,7 @@ public sealed class AzureOpenAiRestClient : IEmbeddingClient, IChatCompletionCli
             if (!string.IsNullOrWhiteSpace(content))
                 return content;
         }
+
         return string.Empty;
     }
 

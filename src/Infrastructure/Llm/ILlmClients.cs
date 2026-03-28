@@ -8,6 +8,10 @@ public interface IEmbeddingClient
 public interface IChatCompletionClient
 {
     Task<string> CompleteAsync(IReadOnlyList<LlmChatMessage> messages, CancellationToken ct);
+
+    IAsyncEnumerable<string> CompleteStreamingAsync(
+        IReadOnlyList<LlmChatMessage> messages,
+        CancellationToken ct);
 }
 
 public sealed record LlmChatMessage(string Role, string Content);
