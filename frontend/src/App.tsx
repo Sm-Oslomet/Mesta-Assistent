@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {useMsal} from "@azure/msal-react"; // SmDev
 import {callApi} from "./api/apiClient"; // smDev
+import { speechToText, textToSpeech } from "./services/speechService"; // smDev
 
 type Role = "user" | "assistant";
 
@@ -227,7 +228,20 @@ export default function App() {
                             disabled={isSending}
                         />
                     </div>
-
+                    <button // added by SmDev Sm-Oslomet
+                        onClick={async() => {
+                            try {
+                                const text = await speechToText();
+                                setInput(text);
+                            } catch (err) {
+                                console.error("Speech error:", err);
+                            }
+                        }}
+                        style={styles.roundbtn}
+                        title="Speak"
+                    >
+                        🎤
+                    </button>
                     <button
                         onClick={() => void send()}
                         disabled={!canSend}
@@ -343,6 +357,31 @@ function Bubble({
                         {line || "\u00A0"}
                     </div>
                 ))}
+
+                {!isUser && (
+                    <div style={{ marginTop: 8}}>
+                        <button
+                            onClick={async () => {
+                                try {
+                                    const audioUrl = await textToSpeech(content);
+                                    const audio = new Audio(audioUrl);
+                                    audio.play();
+                                } catch (err) {
+                                    console.error(" from SmDev, TTS error:", err);
+                                }
+                            }}
+                            style={{
+                                border: "none",
+                                background: "transparent",
+                                cursor: "pointer",
+                                fontSize: 14,
+                            }}
+                            title="Play audio"
+                        >
+                            🔊
+                        </button>
+                    </div>
+                )}
 
                 {!isUser && visibleSources.length > 0 && (
                     <div style={styles.sourcesWrap}>
