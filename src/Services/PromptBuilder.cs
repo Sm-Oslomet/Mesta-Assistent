@@ -16,8 +16,9 @@ public sealed class PromptBuilder
         "If the sources are incomplete but still useful, give the best possible answer and state any uncertainty briefly. " +
         "Only say that you do not know if the sources do not contain enough information to answer at all. " +
         "Ignore irrelevant or repeated source text. " +
-        "Cite supporting sources inline using [S1], [S2], etc. " +
-        "Do not add a separate source-link section yourself; file links are appended by the system. " +
+        "Do not include citation markers like [S1] or [S2]. " +
+        "Use the provided sources to answer, but write a clean, natural answer without referencing source numbers. " +
+        "Do not add a separate source section; file links are handled by the system. " +
         "Keep the answer clear, grounded, and concise.";
 
     public string BuildAnswerStyleInstruction(string question)
