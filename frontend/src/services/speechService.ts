@@ -86,7 +86,11 @@ export const textToSpeech = (text: string): Promise<string> => {
         speechConfig.speechSynthesisVoiceName = "nb-NO-FinnNeural"; // female voice: nb-NO-PernilleNeural 
 
         speechConfig.speechSynthesisOutputFormat = SpeechSDK.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm; // SMDev addition, may need to change
-        const synthesizer = new SpeechSDK.SpeechSynthesizer(speechConfig);
+        const audioConfig = null; // disables speaker playback, but why is it there? is it SDK auto addition?
+        const synthesizer = new SpeechSDK.SpeechSynthesizer(
+            speechConfig,
+            audioConfig
+        );
 
         synthesizer.speakTextAsync(
             text,
