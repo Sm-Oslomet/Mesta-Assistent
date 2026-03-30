@@ -1,5 +1,6 @@
 using AiAssistant.Api.Contracts;
 using AiAssistant.Api.Infrastructure.Llm;
+using System.Runtime.CompilerServices;
 
 namespace AiAssistant.Api.Services;
 
@@ -22,24 +23,64 @@ public sealed class ChatService
         if (topK is < 1 or > 20) topK = 6;
 
         var chunks = await _retrieval.RetrieveAsync(req.Question, topK, ct);
-
-        var distinctChunks = chunks
-            .GroupBy(c =>
-            {
-                if (!string.IsNullOrWhiteSpace(c.DocumentId))
-                    return $"doc:{c.DocumentId.Trim().ToLowerInvariant()}";
-
-                if (!string.IsNullOrWhiteSpace(c.Url))
-                    return $"url:{c.Url.Trim().ToLowerInvariant()}";
-
-                return $"title:{(c.Title ?? string.Empty).Trim().ToLowerInvariant()}";
-            })
-            .Select(g => g.First())
-            .ToList();
+        var distinctChunks = DistinctChunks(chunks);
 
         var system = _prompt.BuildSystemPrompt();
         var sources = _prompt.BuildSourcesBlock(distinctChunks);
+        var messages = BuildMessages(req, system, sources);
 
+        var answer = await _chat.CompleteAsync(messages, ct);
+
+        if (string.IsNullOrWhiteSpace(answer))
+            answer = BuildGroundedFallbackAnswer(req.Question, distinctChunks);
+
+        var src = BuildSourceHits(distinctChunks);
+
+        return new ChatResponse(answer, src);
+    }
+
+    public async IAsyncEnumerable<string> StreamAnswerAsync(
+        ChatRequest req,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        var topK = req.TopK ?? 6;
+        if (topK is < 1 or > 20) topK = 6;
+
+        var chunks = await _retrieval.RetrieveAsync(req.Question, topK, ct);
+        var distinctChunks = DistinctChunks(chunks);
+
+        var system = _prompt.BuildSystemPrompt();
+        var sources = _prompt.BuildSourcesBlock(distinctChunks);
+        var messages = BuildMessages(req, system, sources);
+
+        var gotAnyContent = false;
+
+        await foreach (var chunk in _chat.CompleteStreamingAsync(messages, ct).WithCancellation(ct))
+        {
+            if (string.IsNullOrWhiteSpace(chunk))
+                continue;
+
+            gotAnyContent = true;
+            yield return chunk;
+        }
+
+        if (!gotAnyContent)
+            yield return BuildGroundedFallbackAnswer(req.Question, distinctChunks);
+    }
+
+    public async Task<IReadOnlyList<SourceHit>> GetSourcesAsync(ChatRequest req, CancellationToken ct)
+    {
+        var topK = req.TopK ?? 6;
+        if (topK is < 1 or > 20) topK = 6;
+
+        var chunks = await _retrieval.RetrieveAsync(req.Question, topK, ct);
+        var distinctChunks = DistinctChunks(chunks);
+
+        return BuildSourceHits(distinctChunks);
+    }
+
+    private static List<LlmChatMessage> BuildMessages(ChatRequest req, string system, string sources)
+    {
         var messages = new List<LlmChatMessage>
         {
             new("system", system),
@@ -62,24 +103,29 @@ public sealed class ChatService
         if (lastUserMessage is null || !string.Equals(lastUserMessage.Content.Trim(), normalizedQuestion, StringComparison.Ordinal))
             messages.Add(new("user", req.Question));
 
-        var answer = await _chat.CompleteAsync(messages, ct);
+        return messages;
+    }
 
-        if (string.IsNullOrWhiteSpace(answer))
-        {
-            var fallbackMessages = new List<LlmChatMessage>
+    private static List<RetrievedChunk> DistinctChunks(IReadOnlyList<RetrievedChunk> chunks)
+    {
+        return chunks
+            .GroupBy(c =>
             {
-                new("system", system),
-                new("system", "SOURCES:\n" + sources),
-                new("user", req.Question)
-            };
+                if (!string.IsNullOrWhiteSpace(c.DocumentId))
+                    return $"doc:{c.DocumentId.Trim().ToLowerInvariant()}";
 
-            answer = await _chat.CompleteAsync(fallbackMessages, ct);
-        }
+                if (!string.IsNullOrWhiteSpace(c.Url))
+                    return $"url:{c.Url.Trim().ToLowerInvariant()}";
 
-        if (string.IsNullOrWhiteSpace(answer))
-            answer = BuildGroundedFallbackAnswer(req.Question, distinctChunks);
+                return $"title:{(c.Title ?? string.Empty).Trim().ToLowerInvariant()}";
+            })
+            .Select(g => g.First())
+            .ToList();
+    }
 
-        var src = distinctChunks
+    private static List<SourceHit> BuildSourceHits(IReadOnlyList<RetrievedChunk> distinctChunks)
+    {
+        return distinctChunks
             .GroupBy(c =>
             {
                 if (!string.IsNullOrWhiteSpace(c.DocumentId))
@@ -110,8 +156,6 @@ public sealed class ChatService
                 );
             })
             .ToList();
-
-        return new ChatResponse(answer, src);
     }
 
     private static string BuildGroundedFallbackAnswer(string question, IReadOnlyList<RetrievedChunk> chunks)

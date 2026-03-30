@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {useMsal} from "@azure/msal-react"; // SmDev
-import {callApi} from "./api/apiClient"; // smDev
-import { speechToText, textToSpeech } from "./services/speechService"; // smDev
+import { useMsal } from "@azure/msal-react";
+import { callApi } from "./api/apiClient";
+import { speechToText, textToSpeech } from "./services/speechService";
 
 type Role = "user" | "assistant";
 
@@ -58,7 +58,7 @@ async function askBackend(req: ChatRequest): Promise<ChatApiResponse> {
         );
     }
 
-    const res = await callApi(`${base}/api/Chat`, { // SmDev
+    const res = await callApi(`${base}/api/Chat`, {
         method: "POST",
         body: JSON.stringify(req),
     });
@@ -71,9 +71,76 @@ async function askBackend(req: ChatRequest): Promise<ChatApiResponse> {
     return (await res.json()) as ChatApiResponse;
 }
 
+async function streamBackend(
+    req: ChatRequest,
+    onChunk: (chunk: string) => void
+): Promise<void> {
+    const base = import.meta.env.VITE_API_BASE_URL as string;
+
+    if (!base) {
+        throw new Error(
+            "Mangler VITE_API_BASE_URL. Lag frontend/.env med f.eks. VITE_API_BASE_URL=https://localhost:56510 og restart npm run dev."
+        );
+    }
+
+    const res = await callApi(`${base}/api/Chat/stream`, {
+        method: "POST",
+        body: JSON.stringify(req),
+    });
+
+    if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Backend ${res.status}: ${text || res.statusText}`);
+    }
+
+    if (!res.body) {
+        throw new Error("Backend returnerte ingen stream.");
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    try {
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            if (chunk) onChunk(chunk);
+        }
+
+        const lastChunk = decoder.decode();
+        if (lastChunk) onChunk(lastChunk);
+    } finally {
+        reader.releaseLock();
+    }
+}
+
+async function fetchSources(req: ChatRequest): Promise<SourceHit[]> {
+    const base = import.meta.env.VITE_API_BASE_URL as string;
+
+    if (!base) {
+        throw new Error(
+            "Mangler VITE_API_BASE_URL. Lag frontend/.env med f.eks. VITE_API_BASE_URL=https://localhost:56510 og restart npm run dev."
+        );
+    }
+
+    const res = await callApi(`${base}/api/Chat/sources`, {
+        method: "POST",
+        body: JSON.stringify(req),
+    });
+
+    if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Backend ${res.status}: ${text || res.statusText}`);
+    }
+
+    return (await res.json()) as SourceHit[];
+}
+
 export default function App() {
-    const {accounts } = useMsal(); // SmDev
-    const user = accounts[0]; // SmDev
+    const { accounts } = useMsal();
+    const user = accounts[0];
     const isDesktop = useIsDesktop();
 
     const [messages, setMessages] = useState<Message[]>([]);
@@ -95,7 +162,7 @@ export default function App() {
             top: listRef.current.scrollHeight,
             behavior: "smooth",
         });
-    }, [messages.length]);
+    }, [messages]);
 
     const startNew = () => {
         setMessages([]);
@@ -112,20 +179,22 @@ export default function App() {
         const q = input.trim();
         if (!q || isSending) return;
 
+        const snapshotMessages = messages;
+
         setIsSending(true);
         setInput("");
 
         const userMsg: Message = { id: uid(), role: "user", content: q };
-        setMessages((prev) => [...prev, userMsg]);
-
         const typingId = uid();
+
         setMessages((prev) => [
             ...prev,
-            { id: typingId, role: "assistant", content: "Søker…" },
+            userMsg,
+            { id: typingId, role: "assistant", content: "", sources: [] },
         ]);
 
         try {
-            const history: ApiMessage[] = messages
+            const history: ApiMessage[] = snapshotMessages
                 .filter((m) => m.role === "user" || m.role === "assistant")
                 .slice(-6)
                 .map((m) => ({ role: m.role, content: m.content }));
@@ -136,29 +205,72 @@ export default function App() {
                 topK: 5,
             };
 
-            const response = await askBackend(req);
-            const answerText =
-                response.answer?.trim() || "Ingen svartekst ble returnert fra backend.";
+            let fullText = "";
+            let pendingBuffer = "";
+            let streamDone = false;
+
+            const flushInterval = window.setInterval(() => {
+                if (!pendingBuffer) {
+                    if (streamDone) {
+                        window.clearInterval(flushInterval);
+                    }
+                    return;
+                }
+
+                const take = Math.min(8, pendingBuffer.length);
+                const piece = pendingBuffer.slice(0, take);
+                pendingBuffer = pendingBuffer.slice(take);
+
+                fullText += piece;
+
+                setMessages((prev) =>
+                    prev.map((m) =>
+                        m.id === typingId
+                            ? {
+                                  ...m,
+                                  content: fullText,
+                                  sources: [],
+                              }
+                            : m
+                    )
+                );
+            }, 20);
+
+            await streamBackend(req, (chunk) => {
+                pendingBuffer += chunk;
+            });
+
+            streamDone = true;
+
+            while (pendingBuffer.length > 0) {
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+
+            window.clearInterval(flushInterval);
+
+            const sources = await fetchSources(req);
 
             setMessages((prev) =>
                 prev.map((m) =>
                     m.id === typingId
                         ? {
-                            id: typingId,
-                            role: "assistant",
-                            content: answerText,
-                            sources: response.sources ?? [],
-                        }
+                              ...m,
+                              content: fullText.trim()
+                                  ? fullText
+                                  : "Ingen svartekst ble returnert fra backend.",
+                              sources,
+                          }
                         : m
                 )
             );
         } catch (err) {
             const msg =
                 err instanceof Error ? err.message : "Noe gikk galt. Prøv igjen.";
+
             setMessages((prev) =>
                 prev.map((m) =>
                     m.id === typingId
-                        ? { id: typingId, role: "assistant", content: msg, sources: [] }
+                        ? { ...m, content: msg, sources: [] }
                         : m
                 )
             );
@@ -193,8 +305,8 @@ export default function App() {
                         </div>
                     </div>
 
-                    <div style={{ fontSize: 13, fontWeight: 600}}>
-                        {user ? `Velkommen ${user.name}`: ""}
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>
+                        {user ? `Velkommen ${user.name}` : ""}
                     </div>
                 </div>
 
@@ -228,8 +340,8 @@ export default function App() {
                             disabled={isSending}
                         />
                     </div>
-                    <button // added by SmDev Sm-Oslomet
-                        onClick={async() => {
+                    <button
+                        onClick={async () => {
                             try {
                                 const text = await speechToText();
                                 setInput(text);
@@ -359,7 +471,7 @@ function Bubble({
                 ))}
 
                 {!isUser && (
-                    <div style={{ marginTop: 8}}>
+                    <div style={{ marginTop: 8 }}>
                         <button
                             onClick={async () => {
                                 try {
@@ -611,6 +723,18 @@ const styles: Record<string, React.CSSProperties> = {
         justifyContent: "center",
     },
     roundBtn: {
+        width: 44,
+        height: 44,
+        borderRadius: 999,
+        border: "1px solid rgba(0,0,0,0.10)",
+        background: "#F3F4F6",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "pointer",
+        fontSize: 16,
+    },
+    roundbtn: {
         width: 44,
         height: 44,
         borderRadius: 999,

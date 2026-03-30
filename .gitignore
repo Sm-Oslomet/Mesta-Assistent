@@ -24,5 +24,5 @@ frontend/build/
 .DS_Store
 Thumbs.db
 
-# for secrutity, to not include api keys
-appsettings.Development.json
+# App settings
+appsettings.json
