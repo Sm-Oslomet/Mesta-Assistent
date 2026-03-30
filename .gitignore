@@ -22,4 +22,7 @@ frontend/build/
 
 # OS files
 .DS_Store
-Thumbs.dbsrc/appsettings.json
+Thumbs.db
+
+# for secrutity, to not include api keys
+appsettings.Development.json
