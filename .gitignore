@@ -25,4 +25,4 @@ frontend/build/
 Thumbs.db
 
 # App settings
-appsettings.json
+appsettings.Development.json
