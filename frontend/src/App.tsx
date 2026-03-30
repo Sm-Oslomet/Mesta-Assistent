@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMsal } from "@azure/msal-react";
-import { callApi } from "./api/apiClient";
-import { speechToText, textToSpeech } from "./services/speechService";
+import { useMsal } from "@azure/msal-react"; // SmDev
+import { callApi } from "./api/apiClient"; // SmDev
+import { speechToText, textToSpeech } from "./services/speechService"; // SmDev
 
 type Role = "user" | "assistant";
 
@@ -58,7 +58,7 @@ async function askBackend(req: ChatRequest): Promise<ChatApiResponse> {
         );
     }
 
-    const res = await callApi(`${base}/api/Chat`, {
+    const res = await callApi(`${base}/api/Chat`, { // SmDev
         method: "POST",
         body: JSON.stringify(req),
     });
@@ -139,8 +139,8 @@ async function fetchSources(req: ChatRequest): Promise<SourceHit[]> {
 }
 
 export default function App() {
-    const { accounts } = useMsal();
-    const user = accounts[0];
+    const { accounts } = useMsal(); // SMDev
+    const user = accounts[0]; // SmDev
     const isDesktop = useIsDesktop();
 
     const [messages, setMessages] = useState<Message[]>([]);
@@ -340,7 +340,7 @@ export default function App() {
                             disabled={isSending}
                         />
                     </div>
-                    <button
+                    <button // SmOslomet
                         onClick={async () => {
                             try {
                                 const text = await speechToText();
