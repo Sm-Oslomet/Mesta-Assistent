@@ -26,16 +26,16 @@ export const speechToText = (): Promise<string> => {
         );
 
         SpeechSDK.Recognizer.enableTelemetry(true); // for testing
-        recognizer.recognizing = (s, e) => {
+        recognizer.recognizing = (_, e) => {
         console.log("RECOGNIZING:", e.result.text);
     };
 
-    recognizer.recognized = (s, e) => {// for testing
+    recognizer.recognized = (_, e) => {// for testing
     console.log("RECOGNIZED:", e.result.text);
     console.log("REASON:", e.result.reason);
     };
 
-    recognizer.canceled = (s, e) => {
+    recognizer.canceled = (_, e) => {
     console.error("CANCELED:", e.errorDetails);
     console.error("CANCEL REASON:", e.reason);
     };
@@ -56,7 +56,7 @@ export const speechToText = (): Promise<string> => {
                     reject({ // for testing
                         reason: result.reason,
                         text: result.text,
-                        errorDetauls: result.errorDetails,
+                        errorDetails: result.errorDetails,
                     });
                 }
                 recognizer.close();
@@ -85,6 +85,7 @@ export const textToSpeech = (text: string): Promise<string> => {
 
         speechConfig.speechSynthesisVoiceName = "nb-NO-FinnNeural"; // female voice: nb-NO-PernilleNeural 
 
+        speechConfig.speechSynthesisOutputFormat = SpeechSDK.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm; // SMDev addition, may need to change
         const synthesizer = new SpeechSDK.SpeechSynthesizer(speechConfig);
 
         synthesizer.speakTextAsync(

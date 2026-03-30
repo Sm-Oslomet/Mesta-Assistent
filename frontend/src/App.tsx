@@ -349,7 +349,7 @@ export default function App() {
                                 console.error("Speech error:", err);
                             }
                         }}
-                        style={styles.roundbtn}
+                        style={styles.roundBtn}
                         title="Speak"
                     >
                         🎤
@@ -447,6 +447,8 @@ function Bubble({
     sources?: SourceHit[];
 }) {
     const isUser = role === "user";
+    const audioRef = useRef<HTMLAudioElement | null >(null); // smDev
+    const [isPlaying, setIsPlaying] = useState(false); // smDev
     const visibleSources = (sources ?? []).filter(
         (source) => source.title || source.url
     );
@@ -473,14 +475,36 @@ function Bubble({
                 {!isUser && (
                     <div style={{ marginTop: 8 }}>
                         <button
-                            onClick={async () => {
+                            onClick={async () => { // SmDev additions for text to speech
                                 try {
-                                    const audioUrl = await textToSpeech(content);
+                                    if(audioRef.current){
+                                        if(isPlaying) {
+                                            audioRef.current.pause();
+                                            setIsPlaying(false);
+                                        } else {
+                                            await audioRef.current.play();
+                                            setIsPlaying(true);
+                                        }
+                                        return ;
+                                    }
+                                    
+                                    const audioUrl =  await textToSpeech(content);
                                     const audio = new Audio(audioUrl);
-                                    audio.play();
+
+                                    audioRef.current = audio;
+
+                                    audio.onended = () => {
+                                        URL.revokeObjectURL(audio.src);
+                                        setIsPlaying(false);
+                                        audioRef.current = null;
+                                    };
+
+                                    await audio.play();
+                                    setIsPlaying(true);
                                 } catch (err) {
-                                    console.error(" from SmDev, TTS error:", err);
+                                    console.error("Sm-Dev TTS error:", err);
                                 }
+
                             }}
                             style={{
                                 border: "none",
@@ -490,7 +514,7 @@ function Bubble({
                             }}
                             title="Play audio"
                         >
-                            🔊
+                            {isPlaying ? "⏸" : "🔊"}
                         </button>
                     </div>
                 )}
